@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "seed:users": "tsx src/scripts/seed-users.ts",
+    "seed:clinics": "tsx src/scripts/seed-clinics.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.38.1",

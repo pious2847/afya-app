@@ -2,8 +2,9 @@ import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { db } from "@/lib/db";
-import { assessments, assessmentTurns, clinics } from "@/lib/db/schema";
-import { eq, asc, and, isNotNull } from "drizzle-orm";
+import { assessments, assessmentTurns } from "@/lib/db/schema";
+import { eq, asc } from "drizzle-orm";
+import { getNearbyHospitals } from "@/lib/nearby-hospitals";
 
 const SYSTEM_PROMPT = `You are a warm, professional medical triage assistant for rural African communities. Your role is to:
 1. Ask clear, simple questions to understand symptoms
@@ -154,48 +155,19 @@ export async function POST(request: Request) {
       }
 
       let emergencyHospitals: { name: string; address: string; phone: string | null; distanceText: string }[] = [];
-      if (riskLevel === "emergency" && db && userLat != null && userLng != null) {
+      if (riskLevel === "emergency" && userLat != null && userLng != null) {
         const lat = Number(userLat);
         const lng = Number(userLng);
         if (!isNaN(lat) && !isNaN(lng)) {
-          const hospitalRows = await db
-            .select()
-            .from(clinics)
-            .where(
-              and(
-                eq(clinics.isActive, true),
-                isNotNull(clinics.latitude),
-                isNotNull(clinics.longitude)
-              )
-            )
-            .limit(50);
-          const hospitals = hospitalRows.filter(
-            (r) => r.type === "hospital" || r.type === "health_center"
-          );
-          const R = 6371;
-          const haversine = (la1: number, ln1: number, la2: number, ln2: number) => {
-            const dLat = ((la2 - la1) * Math.PI) / 180;
-            const dLng = ((ln2 - ln1) * Math.PI) / 180;
-            const a =
-              Math.sin(dLat / 2) ** 2 +
-              Math.cos((la1 * Math.PI) / 180) * Math.cos((la2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-          };
-          const withDist = hospitals
-            .map((r) => ({
-              ...r,
-              distanceKm: haversine(lat, lng, r.latitude!, r.longitude!),
-            }))
-            .sort((a, b) => a.distanceKm - b.distanceKm)
-            .slice(0, 5);
-          emergencyHospitals = withDist.map((c) => ({
-            name: c.name,
-            address: c.address,
-            phone: c.phone,
-            distanceText:
-              c.distanceKm < 1
-                ? `${Math.round(c.distanceKm * 1000)} m away`
-                : `${c.distanceKm.toFixed(1)} km away`,
+          const hospitals = await getNearbyHospitals(lat, lng, {
+            limit: 5,
+            includePlaces: true,
+          });
+          emergencyHospitals = hospitals.map((h) => ({
+            name: h.name,
+            address: h.address,
+            phone: h.phone,
+            distanceText: h.distanceText,
           }));
         }
       }

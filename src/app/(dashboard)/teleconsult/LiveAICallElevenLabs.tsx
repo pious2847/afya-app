@@ -1,22 +1,34 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useConversation } from "@elevenlabs/react";
 import { Phone, PhoneOff } from "lucide-react";
 import { Orb } from "@/components/Orb";
 
 const AGENT_ID = process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID || "";
 
+type HospitalInfo = { name: string; address: string; phone: string | null; distanceText: string };
+
 export function LiveAICallElevenLabs() {
   const [agentState, setAgentState] = useState<"disconnected" | "connecting" | "connected" | "disconnecting">("disconnected");
   const [orbState, setOrbState] = useState<"idle" | "connecting" | "listening" | "speaking">("idle");
   const [error, setError] = useState("");
+  const [nearbyHospitals, setNearbyHospitals] = useState<HospitalInfo[]>([]);
+  const contextSentRef = useRef(false);
+
+  const pendingContextRef = useRef<string | null>(null);
 
   const conversation = useConversation({
     onConnect: () => {
       setAgentState("connected");
       setOrbState("listening");
       setError("");
+      // Send hospital context to AI so it can recommend when appropriate
+      const ctx = pendingContextRef.current;
+      if (ctx && !contextSentRef.current) {
+        contextSentRef.current = true;
+        conversation.sendContextualUpdate(ctx);
+      }
     },
     onDisconnect: (details?: unknown) => {
       setAgentState("disconnected");
@@ -55,6 +67,10 @@ export function LiveAICallElevenLabs() {
     setError("");
     setAgentState("connecting");
     setOrbState("connecting");
+    contextSentRef.current = false;
+    pendingContextRef.current = null;
+    setNearbyHospitals([]);
+
     try {
       await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (micErr) {
@@ -63,6 +79,49 @@ export function LiveAICallElevenLabs() {
       setOrbState("idle");
       return;
     }
+
+    // Fetch nearby hospitals for AI context (platform + Google Places)
+    let lat: number | null = null;
+    let lng: number | null = null;
+    if (navigator.geolocation) {
+      try {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 5000,
+          });
+        });
+        lat = pos.coords.latitude;
+        lng = pos.coords.longitude;
+      } catch {
+        /* location optional */
+      }
+    }
+
+    if (lat != null && lng != null) {
+      try {
+        const res = await fetch(
+          `/api/teleconsult/context?lat=${lat}&lng=${lng}`
+        );
+        const data = await res.json();
+        if (data.ok && data.context) {
+          pendingContextRef.current = data.context;
+          if (Array.isArray(data.hospitals)) {
+            setNearbyHospitals(
+              data.hospitals.map((h: HospitalInfo) => ({
+                name: h.name,
+                address: h.address,
+                phone: h.phone,
+                distanceText: h.distanceText,
+              }))
+            );
+          }
+        }
+      } catch {
+        /* context fetch optional */
+      }
+    }
+
     try {
       await conversation.startSession({
         agentId: AGENT_ID,
@@ -147,15 +206,43 @@ export function LiveAICallElevenLabs() {
 
       {/* Orb and status when in call */}
       {(agentState === "connected" || agentState === "connecting") && (
-        <div className="mt-6 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-teal-50 p-6">
-          <div className="flex flex-col items-center gap-3">
-            <Orb state={orbState} size="lg" />
-            <p className="text-sm text-slate-600">
-              {orbState === "listening" && "Listening…"}
-              {orbState === "speaking" && "AfyaAI is speaking…"}
-              {orbState === "connecting" && "Connecting…"}
-            </p>
+        <div className="mt-6 space-y-4">
+          <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-teal-50 p-6">
+            <div className="flex flex-col items-center gap-3">
+              <Orb state={orbState} size="lg" />
+              <p className="text-sm text-slate-600">
+                {orbState === "listening" && "Listening…"}
+                {orbState === "speaking" && "AfyaAI is speaking…"}
+                {orbState === "connecting" && "Connecting…"}
+              </p>
+            </div>
           </div>
+          {nearbyHospitals.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="mb-2 text-sm font-semibold text-slate-800">
+                Nearby hospitals (AI can recommend when needed)
+              </p>
+              <div className="max-h-32 space-y-1.5 overflow-y-auto">
+                {nearbyHospitals.slice(0, 5).map((h) => (
+                  <div
+                    key={`${h.name}-${h.address}`}
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"
+                  >
+                    <p className="font-medium text-slate-900">{h.name}</p>
+                    <p className="text-slate-600">{h.distanceText}</p>
+                    {h.phone && (
+                      <a
+                        href={`tel:${h.phone}`}
+                        className="mt-1 inline-block text-emerald-600 hover:underline"
+                      >
+                        Call
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
